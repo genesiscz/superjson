@@ -40,6 +40,12 @@
       <span id="status"></span>
     </fieldset>
     <fieldset style="margin-top: 8px">
+      <label>Saved runs <select id="savedRuns"><option value="">loading…</option></select></label>
+      <button id="loadRun">Load</button>
+      <label>or a JSON file <input id="importFile" type="file" accept=".json,application/json" /></label>
+      <span id="loaded" class="rme"></span>
+    </fieldset>
+    <fieldset style="margin-top: 8px">
       <label>Profile case <select id="profileCase"></select></label>
       <label><select id="profileLib"><option>current</option><option>baseline</option></select></label>
       <label>seconds <input id="profileSecs" type="number" value="5" min="1" /></label>

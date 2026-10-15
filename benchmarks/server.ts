@@ -1,6 +1,6 @@
 import { $ } from 'bun';
-import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, readdirSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { BENCH, ROOT, bundle, currentEntry, ensureBaseline } from './build.js';
 
@@ -30,6 +30,16 @@ export async function startServer({ port, baselineRef, onResults }: ServerOption
     async fetch(req) {
       const { pathname } = new URL(req.url);
       try {
+        if (pathname.startsWith('/api/results/')) {
+          const name = basename(decodeURIComponent(pathname.slice('/api/results/'.length)));
+          const file = Bun.file(join(resultsDir, name));
+          if (!name.endsWith('.json') || !(await file.exists())) {
+            return new Response('not found', { status: 404, headers });
+          }
+
+          return new Response(file, { headers: { ...headers, 'Content-Type': 'application/json' } });
+        }
+
         switch (pathname) {
           case '/':
             return new Response(Bun.file(join(BENCH, 'index.html')), { headers });
@@ -49,6 +59,25 @@ export async function startServer({ port, baselineRef, onResults }: ServerOption
             );
           }
           case '/api/results': {
+            if (req.method === 'GET') {
+              const runs = await Promise.all(
+                readdirSync(resultsDir)
+                  .filter(name => name.endsWith('.json') && !name.startsWith('latest-'))
+                  .map(async name => {
+                    const run = await Bun.file(join(resultsDir, name)).json();
+
+                    return {
+                      name,
+                      engine: run.engine,
+                      baseline: run.info?.baseline ?? null,
+                      cases: run.results?.length ?? 0,
+                    };
+                  })
+              );
+
+              return Response.json(runs.sort((a, b) => b.name.localeCompare(a.name)), { headers });
+            }
+
             if (req.method !== 'POST') {
               break;
             }

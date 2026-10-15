@@ -177,9 +177,59 @@ $('profile').onclick = () => {
   $('status').textContent = `profiled ${n} iterations of ${label}`;
 };
 
+const savedRuns = $<HTMLSelectElement>('savedRuns');
+const engineName = (ua: string) =>
+  ua.match(/(HeadlessChrome|Chrome|Firefox|Safari)\/[\d.]+/)?.[0] ?? ua;
+
+function showRun(label: string, run: { engine?: string; info?: typeof info; results: CaseResult[] }) {
+  results = run.results;
+  sortKey = null;
+  render();
+  const baseline = run.info?.baseline ? ` · baseline ${run.info.baseline.ref} (${run.info.baseline.sha})` : '';
+  $('loaded').textContent = `showing ${label} · ${engineName(run.engine ?? '?')}${baseline} · ${results.length} cases`;
+}
+
+const runTime = (name: string) => {
+  const iso = name.slice(0, 24).replace(/T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z$/, 'T$1:$2:$3.$4Z');
+  const date = new Date(iso);
+
+  return Number.isNaN(date.getTime())
+    ? name.replace('.json', '')
+    : date.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'medium' });
+};
+
+async function listRuns() {
+  const runs: { name: string; engine: string; baseline: { ref: string; sha: string } | null; cases: number }[] =
+    await (await fetch('/api/results')).json();
+  savedRuns.replaceChildren(
+    ...runs.map(r => {
+      const baseline = r.baseline ? ` vs ${r.baseline.ref}` : '';
+
+      return new Option(`${runTime(r.name)} · ${engineName(r.engine ?? '?')}${baseline} · ${r.cases} cases`, r.name);
+    })
+  );
+}
+
+const loadSaved = async (name: string) =>
+  showRun(runTime(name), await (await fetch(`/api/results/${encodeURIComponent(name)}`)).json());
+
+$('loadRun').onclick = () => savedRuns.value && loadSaved(savedRuns.value);
+$<HTMLInputElement>('importFile').onchange = async event => {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (file) {
+    showRun(file.name, JSON.parse(await file.text()));
+  }
+};
+await listRuns();
+if (params.has('run')) {
+  savedRuns.value = params.get('run')!;
+  await loadSaved(params.get('run')!);
+}
+
 if (params.has('autorun')) {
   await run();
   if (params.has('post')) {
     await fetch('/api/results', { method: 'POST', body: JSON.stringify(exportPayload()) });
+    await listRuns();
   }
 }
