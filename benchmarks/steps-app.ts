@@ -18,8 +18,13 @@ interface Ledger {
   calibrationMs: number;
   crossOriginIsolated: boolean;
   timeMs: number;
+  /** Runs started together by `ledger-run.ts --repeat` share a series id. */
+  series?: string;
+  run?: string;
   steps: StepMeta[];
   cases: LedgerCase[];
+  /** Set on a combined view: number of runs, and `rme` holds the standard deviation in %. */
+  combinedRuns?: number;
 }
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -255,28 +260,106 @@ function show(next: Ledger, label: string) {
   caseSelect.value = String(selectedCase);
   caseSelect.onchange = () => selectCase(Number(caseSelect.value));
   const when = new Date(next.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+  $('spread').textContent = next.combinedRuns
+    ? `mean of ${next.combinedRuns} runs, lower is better; whiskers and ±: standard deviation across runs`
+    : 'median ms per operation in one run, lower is better; whiskers and ±: relative error of the median';
   $('runInfo').textContent =
     `${label} · ${when} · ${brand(next.engine)} · CPU throttle ${next.throttle}× · ` +
     `fixed loop ${next.calibrationMs.toFixed(0)} ms · ${next.cases.length} cases × ${next.steps.length} versions`;
   renderAll();
 }
 
-async function listLedgers() {
-  const list: { name: string; engine: string; throttle: number; cases: number; steps: number }[] = await (await fetch('/api/ledgers')).json();
-  $<HTMLSelectElement>('ledgers').replaceChildren(
-    ...list.map(l => {
-      const iso = l.name.slice(0, 24).replace(/T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z$/, 'T$1:$2:$3.$4Z');
-      const when = new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
-
-      return new Option(`${when} · ${brand(l.engine)} · ${l.throttle}× CPU · ${l.cases} cases`, l.name);
-    })
-  );
-
-  return list;
+interface LedgerListItem {
+  name: string;
+  engine: string;
+  throttle: number;
+  series: string | null;
+  run: string | null;
+  cases: number;
+  steps: number;
 }
 
-async function loadLedger(name: string) {
-  show(await (await fetch(`/api/ledgers/${encodeURIComponent(name)}`)).json(), 'saved run');
+let ledgerList: LedgerListItem[] = [];
+const stampTime = (stamp: string) => {
+  const iso = stamp.slice(0, 24).replace(/T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z$/, 'T$1:$2:$3.$4Z');
+
+  return new Date(iso).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
+};
+
+async function listLedgers() {
+  ledgerList = await (await fetch('/api/ledgers')).json();
+  const seriesCounts = new Map<string, LedgerListItem[]>();
+  for (const l of ledgerList) {
+    if (l.series) {
+      seriesCounts.set(l.series, [...(seriesCounts.get(l.series) ?? []), l]);
+    }
+  }
+
+  const combined = [...seriesCounts.entries()]
+    .filter(([, runs]) => runs.length > 1)
+    .map(([series, runs]) =>
+      new Option(
+        `${stampTime(series)} · ${runs.length} runs combined (mean ± sd) · ${brand(runs[0].engine)} · ${runs[0].throttle}× CPU · ${runs[0].cases} cases`,
+        `series:${series}`
+      )
+    );
+  $<HTMLSelectElement>('ledgers').replaceChildren(
+    ...combined,
+    ...ledgerList.map(
+      l =>
+        new Option(
+          `${stampTime(l.name)} · ${l.run ? `run ${l.run} · ` : ''}${brand(l.engine)} · ${l.throttle}× CPU · ${l.cases} cases`,
+          l.name
+        )
+    )
+  );
+
+  return combined.length ? combined[0].value : ledgerList[0]?.name;
+}
+
+const fetchLedger = async (name: string): Promise<Ledger> =>
+  (await fetch(`/api/ledgers/${encodeURIComponent(name)}`)).json();
+
+/** Mean of the per-run medians; `rme` becomes the sample standard deviation across runs, in %. */
+function combine(runs: Ledger[]): Ledger {
+  const first = runs[0];
+  const shas = first.steps.map(s => s.sha).join();
+  if (runs.some(r => r.steps.map(s => s.sha).join() !== shas || r.cases.length !== first.cases.length)) {
+    throw new Error('runs of one series measured different steps or cases');
+  }
+
+  return {
+    ...first,
+    calibrationMs: runs.reduce((a, r) => a + r.calibrationMs, 0) / runs.length,
+    combinedRuns: runs.length,
+    cases: first.cases.map((c, ci) => ({
+      ...c,
+      results: c.results.map((_, si) => {
+        const xs = runs.map(r => r.cases[ci].results[si].ms);
+        const mean = xs.reduce((a, x) => a + x, 0) / xs.length;
+        const sd = Math.sqrt(xs.reduce((a, x) => a + (x - mean) ** 2, 0) / Math.max(1, xs.length - 1));
+
+        return {
+          ms: mean,
+          rme: (sd / mean) * 100,
+          samples: xs.length,
+          identical: runs.every(r => r.cases[ci].results[si].identical),
+        };
+      }),
+    })),
+  };
+}
+
+async function loadLedger(value: string) {
+  if (value.startsWith('series:')) {
+    const series = value.slice('series:'.length);
+    const names = ledgerList.filter(l => l.series === series).map(l => l.name);
+    show(combine(await Promise.all(names.map(fetchLedger))), `${names.length} runs combined`);
+  } else {
+    show(await fetchLedger(value), 'saved run');
+  }
+
+  $<HTMLSelectElement>('ledgers').value = value;
 }
 
 function calibrate() {
@@ -291,7 +374,7 @@ function calibrate() {
   return performance.now() - start;
 }
 
-async function runLedger(opts: { filter: string; ops: Op[]; timeMs: number; throttle: number }) {
+async function runLedger(opts: { filter: string; ops: Op[]; timeMs: number; throttle: number; series?: string; run?: string }) {
   const status = $('status');
   status.textContent = 'loading versions…';
   const steps: StepMeta[] = await (await fetch('/api/steps')).json();
@@ -316,6 +399,8 @@ async function runLedger(opts: { filter: string; ops: Op[]; timeMs: number; thro
     calibrationMs,
     crossOriginIsolated,
     timeMs: opts.timeMs,
+    series: opts.series,
+    run: opts.run,
     steps,
     cases,
   };
@@ -336,16 +421,18 @@ $('run').onclick = () =>
   });
 window.addEventListener('resize', () => renderChart());
 
-const saved = await listLedgers();
-if (params.has('run')) {
+const preferred = await listLedgers();
+if (params.has('autorun')) {
   await runLedger({
     filter: params.get('filter') ?? 'RQ persisted',
     ops: (params.get('ops') ?? 'stringify,parse,serialize,deserialize').split(',') as Op[],
     timeMs: Number(params.get('time') ?? 6000),
     throttle: Number(params.get('throttle') ?? 1),
+    series: params.get('series') ?? undefined,
+    run: params.get('run') ?? undefined,
   });
 } else if (params.has('ledger')) {
   await loadLedger(params.get('ledger')!);
-} else if (saved.length) {
-  await loadLedger(saved[0].name);
+} else if (preferred) {
+  await loadLedger(preferred);
 }

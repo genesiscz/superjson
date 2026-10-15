@@ -84,6 +84,8 @@ export async function startServer({ port, baselineRef, onResults, onLedger }: Se
                     name,
                     engine: ledger.engine,
                     throttle: ledger.throttle,
+                    series: ledger.series ?? null,
+                    run: ledger.run ?? null,
                     cases: ledger.cases.length,
                     steps: ledger.steps.length,
                   };
