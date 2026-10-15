@@ -16,6 +16,7 @@ import {
   isURL,
 } from './is.js';
 import SuperJSON from './index.js';
+import { parseISOString, toISOString } from './date.js';
 
 export type PrimitiveTypeAnnotation = 'number' | 'undefined' | 'bigint';
 
@@ -74,8 +75,8 @@ const simpleRules = [
   simpleTransformation(
     isDate,
     'Date',
-    v => v.toISOString(),
-    v => new Date(v)
+    toISOString,
+    parseISOString
   ),
 
   simpleTransformation(
