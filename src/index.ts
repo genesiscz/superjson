@@ -11,7 +11,7 @@ import {
   generateReferentialEqualityAnnotations,
   walkRoot,
 } from './plainer.js';
-import { copy } from 'copy-anything';
+import { copy } from './util.js';
 
 export default class SuperJSON {
   /**
