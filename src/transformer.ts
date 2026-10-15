@@ -375,7 +375,8 @@ const applySimple = (
 
 // Same rule order as before: class, symbol, custom, typed array, then the simple rules. The simple
 // rules are split by typeof because each one only accepts a single typeof.
-export const transformValue = (
+/** Class, symbol and custom rules only. */
+export const transformRegisteredValue = (
   value: any,
   superJson: SuperJSON
 ): { value: any; type: TypeAnnotation } | undefined => {
@@ -403,6 +404,18 @@ export const transformValue = (
         type: ['custom', transformer.name],
       };
     }
+  }
+
+  return undefined;
+};
+
+export const transformValue = (
+  value: any,
+  superJson: SuperJSON
+): { value: any; type: TypeAnnotation } | undefined => {
+  const registered = transformRegisteredValue(value, superJson);
+  if (registered) {
+    return registered;
   }
 
   switch (typeof value) {
