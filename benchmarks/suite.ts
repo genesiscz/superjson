@@ -80,36 +80,35 @@ export function prepare(Lib: SuperJSONCtor, c: Case): () => unknown {
 const stableBigint = (_: string, v: unknown) => (typeof v === 'bigint' ? `${v}n` : v);
 
 /**
- * Byte-equal check. Serialization outputs must match exactly. Deserialized values are compared by
- * re-serializing both with the baseline, which captures types and referential identity.
+ * What `lib` produces for the case, in a form that compares byte for byte. Deserialized values are
+ * re-serialized with `reference`, which captures types and referential identity.
  */
-export function checkIdentical(libs: Libs, c: Case): { identical: boolean; bytes: number } {
-  const b = instance(libs.baseline, c.fixture);
-  const cur = instance(libs.current, c.fixture);
+export function outputSignature(reference: SuperJSONCtor, lib: SuperJSONCtor, c: Case): string {
+  const ref = instance(reference, c.fixture);
+  const sj = instance(lib, c.fixture);
   const data = dataOf(c.fixture) as any;
-  const text = b.stringify(data);
-
-  switch (c.op) {
-    case 'serialize':
-    case 'stringify':
-      return { identical: text === cur.stringify(data), bytes: text.length };
-    case 'deserialize':
-    case 'parse':
-    case 'roundtrip': {
-      const viaBaseline = b.deserialize(b.serialize(data));
-      const viaCurrent = cur.deserialize(b.serialize(data));
-      const parsedBaseline = b.parse(text);
-      const parsedCurrent = cur.parse(text);
-      const canon = (v: any) => JSON.stringify(b.serialize(v), stableBigint);
-
-      return {
-        identical:
-          canon(viaBaseline) === canon(viaCurrent) &&
-          canon(parsedBaseline) === canon(parsedCurrent),
-        bytes: text.length,
-      };
+  const canon = (v: any) => JSON.stringify(ref.serialize(v), stableBigint);
+  try {
+    switch (c.op) {
+      case 'serialize':
+      case 'stringify':
+        return sj.stringify(data);
+      default:
+        return `${canon(sj.deserialize(ref.serialize(data)))}|${canon(sj.parse(ref.stringify(data)))}`;
     }
+  } catch (error) {
+    return `throws ${(error as Error).message}`;
   }
+}
+
+/** Byte-equal check of the current version against the baseline. */
+export function checkIdentical(libs: Libs, c: Case): { identical: boolean; bytes: number } {
+  const bytes = instance(libs.baseline, c.fixture).stringify(dataOf(c.fixture)).length;
+
+  return {
+    identical: outputSignature(libs.baseline, libs.baseline, c) === outputSignature(libs.baseline, libs.current, c),
+    bytes,
+  };
 }
 
 let sink: unknown;
@@ -193,6 +192,51 @@ export async function runCase(libs: Libs, c: Case, opts: RunOptions): Promise<Ca
     speedup: current.hz / baseline.hz,
     identical,
     bytes,
+  };
+}
+
+export interface StepResult {
+  /** Median milliseconds per operation. */
+  ms: number;
+  rme: number;
+  samples: number;
+  identical: boolean;
+}
+
+/**
+ * Measures one case for every version. Each round samples every version once, starting at a
+ * different version each round, so drift and GC hit all of them alike.
+ */
+export async function runSteps(
+  versions: SuperJSONCtor[],
+  referenceIndex: number,
+  c: Case,
+  opts: RunOptions
+): Promise<{ bytes: number; results: StepResult[] }> {
+  const reference = versions[referenceIndex];
+  const expected = outputSignature(reference, reference, c);
+  const identical = versions.map(v => outputSignature(reference, v, c) === expected);
+  const fns = versions.map(v => prepare(v, c));
+  fns.forEach(fn => timeIt(fn, 2));
+  const counts = fns.map(fn => calibrate(fn, opts.minSampleMs));
+  const samples: number[][] = fns.map(() => []);
+  const deadline = performance.now() + opts.timeMs;
+  for (let round = 0; round < 5 || (performance.now() < deadline && round < 200); round++) {
+    for (let k = 0; k < fns.length; k++) {
+      const i = (round + k) % fns.length;
+      samples[i].push((counts[i] * 1000) / timeIt(fns[i], counts[i]));
+    }
+
+    await new Promise(r => setTimeout(r, 0));
+  }
+
+  return {
+    bytes: instance(reference, c.fixture).stringify(dataOf(c.fixture)).length,
+    results: samples.map((xs, i) => {
+      const st = stats(xs);
+
+      return { ms: 1000 / st.hz, rme: st.rme, samples: st.samples, identical: identical[i] };
+    }),
   };
 }
 

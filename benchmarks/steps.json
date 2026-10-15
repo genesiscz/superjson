@@ -1,0 +1,10 @@
+{
+  "references": [{ "ref": "v2.2.3", "title": "superjson 2.2.3, the version col-web runs" }],
+  "baseline": { "ref": "origin/main", "title": "upstream main (2.2.5), the baseline every step is checked against" },
+  "steps": "origin/main..perf/steps",
+  "rejected": [
+    "perf/steps-rejected/parsepath-split",
+    "perf/steps-rejected/parent-cache",
+    "perf/steps-rejected/traverse-loop"
+  ]
+}

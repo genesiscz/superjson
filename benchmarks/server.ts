@@ -3,11 +3,13 @@ import { mkdirSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { BENCH, ROOT, bundle, currentEntry, ensureBaseline } from './build.js';
+import { resolveSteps } from './ledger.js';
 
 export interface ServerOptions {
   port: number;
   baselineRef: string;
   onResults?: (results: unknown) => void;
+  onLedger?: (ledger: unknown) => void;
 }
 
 // Cross-origin isolation lifts the performance.now() clamp from 100µs to 5µs in Chromium.
@@ -20,10 +22,19 @@ const headers = {
 const js = (code: string) =>
   new Response(code, { headers: { ...headers, 'Content-Type': 'text/javascript' } });
 
-export async function startServer({ port, baselineRef, onResults }: ServerOptions) {
+export async function startServer({ port, baselineRef, onResults, onLedger }: ServerOptions) {
   const baseline = await ensureBaseline(baselineRef);
   const resultsDir = join(BENCH, '.results');
-  mkdirSync(resultsDir, { recursive: true });
+  const ledgersDir = join(resultsDir, 'ledgers');
+  mkdirSync(ledgersDir, { recursive: true });
+  const savedFile = async (dir: string, encoded: string) => {
+    const name = basename(decodeURIComponent(encoded));
+    const file = Bun.file(join(dir, name));
+
+    return name.endsWith('.json') && (await file.exists())
+      ? new Response(file, { headers: { ...headers, 'Content-Type': 'application/json' } })
+      : new Response('not found', { status: 404, headers });
+  };
 
   return Bun.serve({
     port,
@@ -31,18 +42,56 @@ export async function startServer({ port, baselineRef, onResults }: ServerOption
       const { pathname } = new URL(req.url);
       try {
         if (pathname.startsWith('/api/results/')) {
-          const name = basename(decodeURIComponent(pathname.slice('/api/results/'.length)));
-          const file = Bun.file(join(resultsDir, name));
-          if (!name.endsWith('.json') || !(await file.exists())) {
-            return new Response('not found', { status: 404, headers });
-          }
+          return savedFile(resultsDir, pathname.slice('/api/results/'.length));
+        }
 
-          return new Response(file, { headers: { ...headers, 'Content-Type': 'application/json' } });
+        if (pathname.startsWith('/api/ledgers/')) {
+          return savedFile(ledgersDir, pathname.slice('/api/ledgers/'.length));
+        }
+
+        const libRef = pathname.match(/^\/lib\/ref\/([0-9a-f]{7,40})\.js$/);
+        if (libRef) {
+          return js(await bundle((await ensureBaseline(libRef[1])).entry, 'browser'));
         }
 
         switch (pathname) {
           case '/':
             return new Response(Bun.file(join(BENCH, 'index.html')), { headers });
+          case '/steps':
+            return new Response(Bun.file(join(BENCH, 'steps.html')), { headers });
+          case '/steps.js':
+            return js(await bundle(join(BENCH, 'steps-app.ts'), 'browser'));
+          case '/api/steps':
+            return Response.json(await resolveSteps(), { headers });
+          case '/api/ledgers': {
+            if (req.method === 'POST') {
+              const body = await req.json();
+              const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+              const name = `${stamp}-x${body.throttle ?? 1}.json`;
+              await Bun.write(join(ledgersDir, name), JSON.stringify(body));
+              onLedger?.(body);
+
+              return Response.json({ ok: true, name }, { headers });
+            }
+
+            const ledgers = await Promise.all(
+              readdirSync(ledgersDir)
+                .filter(name => name.endsWith('.json'))
+                .map(async name => {
+                  const ledger = await Bun.file(join(ledgersDir, name)).json();
+
+                  return {
+                    name,
+                    engine: ledger.engine,
+                    throttle: ledger.throttle,
+                    cases: ledger.cases.length,
+                    steps: ledger.steps.length,
+                  };
+                })
+            );
+
+            return Response.json(ledgers.sort((a, b) => b.name.localeCompare(a.name)), { headers });
+          }
           case '/app.js':
             return js(await bundle(join(BENCH, 'app.ts'), 'browser'));
           case '/lib/current.js':

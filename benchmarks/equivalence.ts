@@ -5,6 +5,7 @@ import { BENCH, currentEntry, ensureBaseline, writeBundle } from './build.js';
 const { values } = parseArgs({
   options: {
     baseline: { type: 'string', default: 'origin/main' },
+    current: { type: 'string' },
     engine: { type: 'string', default: 'bun,node' },
     runs: { type: 'string', default: '20000' },
     seed: { type: 'string', default: '1' },
@@ -12,12 +13,13 @@ const { values } = parseArgs({
 });
 
 const baseline = await ensureBaseline(values.baseline!);
-console.error(`baseline ${baseline.ref} (${baseline.sha}) vs working tree`);
+const current = values.current ? (await ensureBaseline(values.current)).entry : currentEntry;
+console.error(`baseline ${baseline.ref} (${baseline.sha}) vs ${values.current ?? 'working tree'}`);
 let failed = false;
 for (const engine of values.engine!.split(',') as ('bun' | 'node')[]) {
   const [b, c, runner] = await Promise.all([
     writeBundle(`baseline-eq-${engine}`, baseline.entry, engine),
-    writeBundle(`current-eq-${engine}`, currentEntry, engine),
+    writeBundle(`current-eq-${engine}`, current, engine),
     writeBundle(`equivalence-${engine}`, join(BENCH, 'equivalence-run.ts'), engine),
   ]);
   const bin = engine === 'bun' ? process.execPath : 'node';

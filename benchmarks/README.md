@@ -9,6 +9,19 @@ bun benchmarks/server.ts --baseline v2.2.5   # any git ref as the baseline
 bun benchmarks/cli.ts --engine bun,node,chrome --filter dates,collections --ops serialize --time 500
 ```
 
+## Step ledger
+
+Every optimization is one commit on `perf/steps` (from `origin/main`); rejected attempts live on
+`perf/steps-rejected/*`. `steps.json` lists them. `http://localhost:4173/steps` shows saved
+ledger runs: one chart per case, the commit message and diff of each step, and a matrix of all
+cases by all steps. Every version runs in the same page, sampled in rotating order.
+
+```sh
+# Brave headless with CPU throttling over the DevTools protocol (3.79 = the calibrated "mid" preset)
+bun benchmarks/ledger-run.ts --throttle 3.79 --filter "RQ persisted,tRPC" --ops stringify,parse
+bun benchmarks/equivalence.ts --current perf/steps~3   # byte-equality check of any step
+```
+
 - `fixtures.ts`: the data sets. `suite.ts`: cases, timing harness, output check.
 - The page loads both versions as bundles built on request from the TypeScript source, so a
   reload picks up every edit in `src/`.
