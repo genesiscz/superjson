@@ -371,6 +371,63 @@ export const fixtures: Fixture[] = [
     }),
   },
   {
+    // Shape of col-web's persisted TanStack cache: 32 queries, one 500-entry codebook with
+    // validFrom/validTo Dates and an own `undefined` key per entry.
+    name: 'RQ persisted cache ~400KB (col-web)',
+    group: 'realistic',
+    make: () => {
+      const query = (key: unknown[], data: unknown) => ({
+        state: {
+          data,
+          dataUpdateCount: 1,
+          dataUpdatedAt: 1_760_000_000_000 + int(1e6),
+          error: null,
+          errorUpdateCount: 0,
+          errorUpdatedAt: 0,
+          fetchFailureCount: 0,
+          fetchFailureReason: null,
+          fetchMeta: null,
+          isInvalidated: false,
+          status: 'success',
+          fetchStatus: 'idle',
+        },
+        queryKey: key,
+        queryHash: JSON.stringify(key),
+      });
+      const codebook = Array.from({ length: 500 }, (_, i) => ({
+        code: `ERR_${i}`,
+        name: words(4),
+        description: words(12),
+        validFrom: date(),
+        validTo: date(),
+        otherValues: undefined,
+      }));
+      const others = Array.from({ length: 31 }, (_, q) =>
+        query(
+          ['resource', { id: q }],
+          Array.from({ length: 8 + int(30) }, (_, i) => ({
+            id: `${q}-${i}`,
+            label: words(5),
+            amount: rand() * 1e4,
+            active: rand() > 0.3,
+            updatedAt: rand() > 0.7 ? date() : undefined,
+            note: rand() > 0.6 ? undefined : words(6),
+            items: Array.from({ length: 3 }, () => ({ k: word(), v: int(100) })),
+          }))
+        )
+      );
+
+      return {
+        buster: '',
+        timestamp: 1_760_000_000_000,
+        clientState: {
+          mutations: [],
+          queries: [query(['codebook-data', { codebookId: 'TP_COL_ERRORS' }], codebook), ...others],
+        },
+      };
+    },
+  },
+  {
     name: 'dashboard: mixed everything',
     group: 'realistic',
     setup: sj => sj.registerClass(Point, 'Point'),

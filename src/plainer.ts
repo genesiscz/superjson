@@ -191,7 +191,7 @@ class Seen extends PathNode {
   more: PathNode[] | undefined = undefined;
   done = false;
   value: any = undefined;
-  annotations: MinimisedTree<TypeAnnotation> = undefined;
+  annotations: Annotations = undefined;
 }
 
 const toPath = (node: PathNode | null): string[] => {
@@ -212,13 +212,75 @@ const pathsOf = (seen: Seen): string[][] => {
   return paths;
 };
 
+/**
+ * The annotation record of a plain container, built lazily so each flattened key is joined once.
+ * Keys are kept as an object would order them: array indices ascending, then insertion order.
+ */
+class PendingAnnotations {
+  /** Pairs: escaped array-index key, tree. */
+  readonly indices: any[] = [];
+  /** Pairs: escaped key and tree, or `key.` prefix and a nested PendingAnnotations. */
+  readonly rest: any[] = [];
+}
+
+const isArrayIndex = (key: string): boolean => {
+  const length = key.length;
+  if (length === 0 || length > 10) {
+    return false;
+  }
+
+  for (let i = 0; i < length; i++) {
+    const code = key.charCodeAt(i);
+    if (code < 48 || code > 57) {
+      return false;
+    }
+  }
+
+  if (key.charCodeAt(0) === 48) {
+    return length === 1;
+  }
+
+  return length < 10 || +key < 4294967295;
+};
+
+function materialize(
+  pending: PendingAnnotations,
+  prefix: string,
+  out: Record<string, Tree<TypeAnnotation>>
+): Record<string, Tree<TypeAnnotation>> {
+  const { indices, rest } = pending;
+  for (let i = 0; i < indices.length; i += 2) {
+    out[prefix + indices[i]] = indices[i + 1];
+  }
+
+  for (let i = 0; i < rest.length; i += 2) {
+    const value = rest[i + 1];
+    if (value instanceof PendingAnnotations) {
+      materialize(value, prefix + rest[i], out);
+    } else {
+      out[prefix + rest[i]] = value;
+    }
+  }
+
+  return out;
+}
+
+const toRecord = (
+  annotations: Annotations
+): MinimisedTree<TypeAnnotation> =>
+  annotations instanceof PendingAnnotations
+    ? materialize(annotations, '', {})
+    : annotations;
+
+type Annotations = Tree<TypeAnnotation> | PendingAnnotations | undefined;
+
 interface WalkContext {
   superJson: SuperJSON;
   dedupe: boolean;
   /** Every non-primitive in visiting order. `done` is false while its walk is still running. */
   seen: Map<unknown, Seen>;
   /** Annotations of the value the last `walk` call returned. */
-  annotations: MinimisedTree<TypeAnnotation>;
+  annotations: Annotations;
 }
 
 // No built-in rule (Date, Map, typed array...) can match an object with one of these prototypes.
@@ -275,7 +337,7 @@ function walk(
   const transformed = transformationResult?.value ?? object;
 
   const transformedValue: any = isArray(transformed) ? [] : {};
-  let innerAnnotations: Record<string, Tree<TypeAnnotation>> | undefined;
+  let inner: PendingAnnotations | undefined;
 
   const keys = Object.keys(transformed);
   for (let i = 0; i < keys.length; i++) {
@@ -293,24 +355,23 @@ function walk(
     transformedValue[index] = walk(transformed[index], ctx, parent, index);
 
     const childAnnotations = ctx.annotations;
-    if (isArray(childAnnotations)) {
-      innerAnnotations ??= {};
-      innerAnnotations[escapeKey(index)] = childAnnotations;
-    } else if (isPlainObject(childAnnotations)) {
-      innerAnnotations ??= {};
-      const prefix = escapeKey(index) + '.';
-      const childKeys = Object.keys(childAnnotations);
-      for (let j = 0; j < childKeys.length; j++) {
-        innerAnnotations[prefix + childKeys[j]] =
-          childAnnotations[childKeys[j]];
+    if (childAnnotations !== undefined) {
+      inner ??= new PendingAnnotations();
+      const escaped = escapeKey(index);
+      if (childAnnotations instanceof PendingAnnotations) {
+        inner.rest.push(escaped + '.', childAnnotations);
+      } else if (isArrayIndex(escaped)) {
+        inner.indices.push(escaped, childAnnotations);
+      } else {
+        inner.rest.push(escaped, childAnnotations);
       }
     }
   }
 
-  const annotations: MinimisedTree<TypeAnnotation> = innerAnnotations
+  const annotations: Annotations = inner
     ? transformationResult
-      ? [transformationResult.type, innerAnnotations]
-      : innerAnnotations
+      ? [transformationResult.type, materialize(inner, '', {})]
+      : inner
     : transformationResult
     ? [transformationResult.type]
     : undefined;
@@ -330,7 +391,7 @@ function finish(
   ctx: WalkContext,
   seen: Seen | undefined,
   value: any,
-  annotations: MinimisedTree<TypeAnnotation>
+  annotations: Annotations
 ) {
   if (seen) {
     seen.done = true;
@@ -362,7 +423,11 @@ export function walkRoot(
     }
   });
 
-  return { transformedValue, annotations: ctx.annotations, identities };
+  return {
+    transformedValue,
+    annotations: toRecord(ctx.annotations),
+    identities,
+  };
 }
 
 export const walker = (

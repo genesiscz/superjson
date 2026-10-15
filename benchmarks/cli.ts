@@ -8,7 +8,7 @@ const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const { values } = parseArgs({
   options: {
-    engine: { type: 'string', default: 'bun,node' },
+    engine: { type: 'string', default: 'chrome' },
     baseline: { type: 'string', default: 'origin/main' },
     filter: { type: 'string', default: '' },
     ops: { type: 'string' },
