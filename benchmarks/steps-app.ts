@@ -72,8 +72,19 @@ function delta(c: LedgerCase, steps: StepMeta[], i: number) {
     return '';
   }
 
-  const change = c.results[i].ms / c.results[p].ms - 1;
-  if (Math.abs(change) < 0.03) {
+  const a = c.results[p];
+  const b = c.results[i];
+  const change = b.ms / a.ms - 1;
+  const runs = ledger?.combinedRuns;
+  if (runs) {
+    const se = Math.sqrt(((a.ms * a.rme) / 100) ** 2 / runs + ((b.ms * b.rme) / 100) ** 2 / runs);
+    const t = se ? (b.ms - a.ms) / se : 0;
+    if (Math.abs(t) < 3) {
+      return `<span class="small" title="Welch t = ${t.toFixed(1)}, within run-to-run noise">≈ ${change >= 0 ? '+' : ''}${(change * 100).toFixed(0)}%</span>`;
+    }
+  }
+
+  if (!runs && Math.abs(change) < 0.03) {
     return `<span class="small">${change >= 0 ? '+' : ''}${(change * 100).toFixed(0)}%</span>`;
   }
 
@@ -261,7 +272,7 @@ function show(next: Ledger, label: string) {
   caseSelect.onchange = () => selectCase(Number(caseSelect.value));
   const when = new Date(next.createdAt).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' });
   $('spread').textContent = next.combinedRuns
-    ? `mean of ${next.combinedRuns} runs, lower is better; whiskers and ±: standard deviation across runs`
+    ? `mean of ${next.combinedRuns} runs, lower is better; whiskers and ±: standard deviation across runs; ▼▲ only when Welch |t| > 3, ≈ otherwise`
     : 'median ms per operation in one run, lower is better; whiskers and ±: relative error of the median';
   $('runInfo').textContent =
     `${label} · ${when} · ${brand(next.engine)} · CPU throttle ${next.throttle}× · ` +
