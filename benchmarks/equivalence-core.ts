@@ -154,5 +154,89 @@ export function runEquivalence(
     }
   }
 
-  return failures;
+  const segments = ['a', 'b', '0', '1', '2', 'x\\.y', '__proto__', 'constructor', 'prototype', 'a.0', '0.1', '1.0', ''];
+  const types: unknown[] = ['Date', 'number', 'undefined', 'bigint', 'map', 'set', 'regexp', 'URL', 'Error', ['class', 'Point'], ['custom', 'money'], ['symbol', 'eq'], ['typed-array', 'Uint8Array'], 'bogus', 5, null];
+  const genJson = (depth: number): any => {
+    if (depth <= 0 || rand() < 0.25) {
+      return pick<unknown>(['2020-01-01T00:00:00.000Z', 'NaN', '-0', 5, null, '/a/g', 'https://x.y/', [1, 2], [['k', 'v']], true]);
+    }
+
+    if (rand() < 0.1) {
+      return new Map([[pick(['a', 0]), genJson(depth - 1)]]);
+    }
+
+    if (rand() < 0.5) {
+      return Array.from({ length: Math.floor(rand() * 4) }, () => genJson(depth - 1));
+    }
+
+    const out: any = {};
+    for (let i = 0; i < 3; i++) {
+      out[pick(['a', 'b', '0', '1', 'x.y'])] = genJson(depth - 1);
+    }
+
+    return out;
+  };
+  const genTree = (depth: number): any => {
+    const leaf = () => [pick(types)];
+    if (depth <= 0 || rand() < 0.3) {
+      return leaf();
+    }
+
+    const children: any = {};
+    for (let i = 0; i < 1 + Math.floor(rand() * 3); i++) {
+      children[pick(segments)] = genTree(depth - 1);
+    }
+
+    return rand() < 0.5 ? children : [pick(types), children];
+  };
+
+  let malformedFailures = 0;
+  let malformedThrows = 0;
+  for (let i = 0; i < runs; i++) {
+    const b = new Baseline();
+    const c = new Current();
+    setup(b);
+    setup(c);
+    const jsonSeed = seed;
+    const json = JSON.stringify(genJson(3));
+    const freshJson = () => {
+      const saved = seed;
+      seed = jsonSeed;
+      const value = genJson(3);
+      seed = saved;
+
+      return value;
+    };
+    const meta: any = { values: genTree(3), v: pick([1, 1, 0]) };
+    if (rand() < 0.3) {
+      meta.referentialEqualities = { [pick(segments)]: [pick(segments)] };
+    }
+
+    const result = (lib: InstanceType<SuperJSONCtor>, inPlace: boolean) =>
+      attempt(() => {
+        const payload = { json: inPlace ? JSON.parse(json) : freshJson(), meta: JSON.parse(JSON.stringify(meta)) };
+        const value = lib.deserialize(payload, { inPlace });
+
+        return attempt(() => JSON.stringify(b.serialize(value), bigints));
+      });
+    for (const inPlace of [true, false]) {
+      const expected = result(b, inPlace);
+      const actual = result(c, inPlace);
+      if (expected.startsWith('throws')) {
+        malformedThrows++;
+      }
+      if (expected !== actual) {
+        malformedFailures++;
+        if (malformedFailures <= 5) {
+          log(`✗ malformed run ${i} inPlace ${inPlace}: json ${json} meta ${JSON.stringify(meta)}`);
+          log(`  baseline: ${expected.slice(0, 300)}`);
+          log(`  current:  ${actual.slice(0, 300)}`);
+        }
+      }
+    }
+  }
+
+  log(`malformed payloads: ${2 * runs - malformedFailures}/${2 * runs} identical (${malformedThrows} throw in both)`);
+
+  return failures + malformedFailures;
 }
