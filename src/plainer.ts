@@ -14,7 +14,7 @@ import {
   TypeAnnotation,
   untransformValue,
 } from './transformer.js';
-import { includes, forEach } from './util.js';
+import { forEach } from './util.js';
 import { parsePath } from './pathstringifier.js';
 import { getDeep, setDeep } from './accessDeep.js';
 import SuperJSON from './index.js';
@@ -30,35 +30,39 @@ const enableLegacyPaths = (version: number) => version < 1;
 function traverse<T>(
   tree: MinimisedTree<T>,
   walker: (v: T, path: string[]) => void,
-  version: number,
-  origin: string[] = []
+  legacyPaths: boolean,
+  origin: string[]
 ): void {
   if (!tree) {
     return;
   }
 
-  const legacyPaths = enableLegacyPaths(version);
   if (!isArray(tree)) {
-    forEach(tree, (subtree, key) =>
-      traverse(subtree, walker, version, [
-        ...origin,
-        ...parsePath(key, legacyPaths),
-      ])
-    );
+    traverseChildren(tree, walker, legacyPaths, origin);
     return;
   }
 
   const [nodeValue, children] = tree;
   if (children) {
-    forEach(children, (child, key) => {
-      traverse(child, walker, version, [
-        ...origin,
-        ...parsePath(key, legacyPaths),
-      ]);
-    });
+    traverseChildren(children, walker, legacyPaths, origin);
   }
 
   walker(nodeValue, origin);
+}
+
+// `origin` is one shared stack; walkers must not keep a reference to it.
+function traverseChildren<T>(
+  children: Record<string, Tree<T>>,
+  walker: (v: T, path: string[]) => void,
+  legacyPaths: boolean,
+  origin: string[]
+) {
+  const length = origin.length;
+  forEach(children, (child, key) => {
+    origin.push(...parsePath(key, legacyPaths));
+    traverse(child, walker, legacyPaths, origin);
+    origin.length = length;
+  });
 }
 
 export function applyValueAnnotations(
@@ -72,7 +76,8 @@ export function applyValueAnnotations(
     (type, path) => {
       plain = setDeep(plain, path, v => untransformValue(v, type, superJson));
     },
-    version
+    enableLegacyPaths(version),
+    []
   );
 
   return plain;
@@ -121,16 +126,6 @@ const isDeep = (object: any, superJson: SuperJSON): boolean =>
   isSet(object) ||
   isError(object) ||
   isInstanceOfRegisteredClass(object, superJson);
-
-function addIdentity(object: any, path: any[], identities: Map<any, any[][]>) {
-  const existingSet = identities.get(object);
-
-  if (existingSet) {
-    existingSet.push(path);
-  } else {
-    identities.set(object, [path]);
-  }
-}
 
 interface Result {
   transformedValue: any;
@@ -185,62 +180,85 @@ export function generateReferentialEqualityAnnotations(
   }
 }
 
-export const walker = (
+class PathNode {
+  constructor(readonly parent: PathNode | null, readonly key: string) {}
+}
+
+const toPath = (node: PathNode | null): string[] => {
+  const path: string[] = [];
+  for (; node; node = node.parent) {
+    path.push(node.key);
+  }
+
+  return path.reverse();
+};
+
+interface Seen {
+  paths: (PathNode | null)[];
+  result: Result | undefined;
+}
+
+interface WalkContext {
+  superJson: SuperJSON;
+  dedupe: boolean;
+  /** Every non-primitive in visiting order. A missing `result` means the walk of it is still running. */
+  seen: Map<unknown, Seen>;
+  /** Annotations of the value the last `walk` call returned. */
+  annotations: MinimisedTree<TypeAnnotation>;
+}
+
+function walk(
   object: any,
-  identities: Map<any, any[][]>,
-  superJson: SuperJSON,
-  dedupe: boolean,
-  path: any[] = [],
-  objectsInThisPath: any[] = [],
-  seenObjects = new Map<unknown, Result>()
-): Result => {
+  ctx: WalkContext,
+  parent: PathNode | null,
+  key: string | null
+): any {
   const primitive = isPrimitive(object);
+  let seen: Seen | undefined;
 
   if (!primitive) {
-    addIdentity(object, path, identities);
-
-    const seen = seenObjects.get(object);
+    const node = key === null ? parent : new PathNode(parent, key);
+    seen = ctx.seen.get(object);
     if (seen) {
-      // short-circuit result if we've seen this object before
-      return dedupe
-        ? {
-            transformedValue: null,
-          }
-        : seen;
-    }
-  }
-
-  if (!isDeep(object, superJson)) {
-    const transformed = transformValue(object, superJson);
-
-    const result: Result = transformed
-      ? {
-          transformedValue: transformed.value,
-          annotations: [transformed.type],
+      seen.paths.push(node);
+      if (seen.result) {
+        if (ctx.dedupe) {
+          ctx.annotations = undefined;
+          return null;
         }
-      : {
-          transformedValue: object,
-        };
-    if (!primitive) {
-      seenObjects.set(object, result);
+
+        ctx.annotations = seen.result.annotations;
+        return seen.result.transformedValue;
+      }
+
+      ctx.annotations = undefined;
+      return isDeep(object, ctx.superJson)
+        ? null
+        : leaf(object, ctx, seen);
     }
-    return result;
+
+    seen = { paths: [node], result: undefined };
+    ctx.seen.set(object, seen);
+    parent = node;
   }
 
-  if (includes(objectsInThisPath, object)) {
-    // prevent circular references
-    return {
-      transformedValue: null,
-    };
+  if (!isDeep(object, ctx.superJson)) {
+    return leaf(object, ctx, seen);
   }
 
-  const transformationResult = transformValue(object, superJson);
+  if (primitive && key !== null) {
+    parent = new PathNode(parent, key);
+  }
+
+  const transformationResult = transformValue(object, ctx.superJson);
   const transformed = transformationResult?.value ?? object;
 
   const transformedValue: any = isArray(transformed) ? [] : {};
-  const innerAnnotations: Record<string, Tree<TypeAnnotation>> = {};
+  let innerAnnotations: Record<string, Tree<TypeAnnotation>> | undefined;
 
-  forEach(transformed, (value, index) => {
+  const keys = Object.keys(transformed);
+  for (let i = 0; i < keys.length; i++) {
+    const index = keys[i];
     if (
       index === '__proto__' ||
       index === 'constructor' ||
@@ -251,43 +269,88 @@ export const walker = (
       );
     }
 
-    const recursiveResult = walker(
-      value,
-      identities,
-      superJson,
-      dedupe,
-      [...path, index],
-      [...objectsInThisPath, object],
-      seenObjects
-    );
+    transformedValue[index] = walk(transformed[index], ctx, parent, index);
 
-    transformedValue[index] = recursiveResult.transformedValue;
+    const childAnnotations = ctx.annotations;
+    if (isArray(childAnnotations)) {
+      innerAnnotations ??= {};
+      innerAnnotations[escapeKey(index)] = childAnnotations;
+    } else if (isPlainObject(childAnnotations)) {
+      innerAnnotations ??= {};
+      const prefix = escapeKey(index) + '.';
+      const childKeys = Object.keys(childAnnotations);
+      for (let j = 0; j < childKeys.length; j++) {
+        innerAnnotations[prefix + childKeys[j]] =
+          childAnnotations[childKeys[j]];
+      }
+    }
+  }
 
-    if (isArray(recursiveResult.annotations)) {
-      innerAnnotations[escapeKey(index)] = recursiveResult.annotations;
-    } else if (isPlainObject(recursiveResult.annotations)) {
-      forEach(recursiveResult.annotations, (tree, key) => {
-        innerAnnotations[escapeKey(index) + '.' + key] = tree;
-      });
+  const annotations: MinimisedTree<TypeAnnotation> = innerAnnotations
+    ? transformationResult
+      ? [transformationResult.type, innerAnnotations]
+      : innerAnnotations
+    : transformationResult
+    ? [transformationResult.type]
+    : undefined;
+
+  if (seen) {
+    seen.result = { transformedValue, annotations };
+  }
+
+  ctx.annotations = annotations;
+  return transformedValue;
+}
+
+function leaf(object: any, ctx: WalkContext, seen: Seen | undefined) {
+  const transformed = transformValue(object, ctx.superJson);
+  const transformedValue = transformed ? transformed.value : object;
+  const annotations: MinimisedTree<TypeAnnotation> = transformed
+    ? [transformed.type]
+    : undefined;
+
+  if (seen) {
+    seen.result = { transformedValue, annotations };
+  }
+
+  ctx.annotations = annotations;
+  return transformedValue;
+}
+
+export function walkRoot(
+  object: any,
+  superJson: SuperJSON,
+  dedupe: boolean
+): Result & { identities: Map<any, any[][]> } {
+  const ctx: WalkContext = {
+    superJson,
+    dedupe,
+    seen: new Map(),
+    annotations: undefined,
+  };
+  const transformedValue = walk(object, ctx, null, null);
+
+  const identities = new Map<any, any[][]>();
+  ctx.seen.forEach((seen, value) => {
+    if (seen.paths.length > 1) {
+      identities.set(value, seen.paths.map(toPath));
     }
   });
 
-  const result: Result = isEmptyObject(innerAnnotations)
-    ? {
-        transformedValue,
-        annotations: !!transformationResult
-          ? [transformationResult.type]
-          : undefined,
-      }
-    : {
-        transformedValue,
-        annotations: !!transformationResult
-          ? [transformationResult.type, innerAnnotations]
-          : innerAnnotations,
-      };
-  if (!primitive) {
-    seenObjects.set(object, result);
-  }
+  return { transformedValue, annotations: ctx.annotations, identities };
+}
 
-  return result;
+export const walker = (
+  object: any,
+  identities: Map<any, any[][]>,
+  superJson: SuperJSON,
+  dedupe: boolean
+): Result => {
+  const result = walkRoot(object, superJson, dedupe);
+  result.identities.forEach((paths, value) => identities.set(value, paths));
+
+  return {
+    transformedValue: result.transformedValue,
+    annotations: result.annotations,
+  };
 };
