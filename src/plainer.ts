@@ -31,39 +31,35 @@ const enableLegacyPaths = (version: number) => version < 1;
 function traverse<T>(
   tree: MinimisedTree<T>,
   walker: (v: T, path: string[]) => void,
-  legacyPaths: boolean,
-  origin: string[]
+  version: number,
+  origin: string[] = []
 ): void {
   if (!tree) {
     return;
   }
 
+  const legacyPaths = enableLegacyPaths(version);
   if (!isArray(tree)) {
-    traverseChildren(tree, walker, legacyPaths, origin);
+    forEach(tree, (subtree, key) =>
+      traverse(subtree, walker, version, [
+        ...origin,
+        ...parsePath(key, legacyPaths),
+      ])
+    );
     return;
   }
 
   const [nodeValue, children] = tree;
   if (children) {
-    traverseChildren(children, walker, legacyPaths, origin);
+    forEach(children, (child, key) => {
+      traverse(child, walker, version, [
+        ...origin,
+        ...parsePath(key, legacyPaths),
+      ]);
+    });
   }
 
   walker(nodeValue, origin);
-}
-
-// `origin` is one shared stack; walkers must not keep a reference to it.
-function traverseChildren<T>(
-  children: Record<string, Tree<T>>,
-  walker: (v: T, path: string[]) => void,
-  legacyPaths: boolean,
-  origin: string[]
-) {
-  const length = origin.length;
-  forEach(children, (child, key) => {
-    origin.push(...parsePath(key, legacyPaths));
-    traverse(child, walker, legacyPaths, origin);
-    origin.length = length;
-  });
 }
 
 export function applyValueAnnotations(
@@ -77,8 +73,7 @@ export function applyValueAnnotations(
     (type, path) => {
       plain = setDeep(plain, path, v => untransformValue(v, type, superJson));
     },
-    enableLegacyPaths(version),
-    []
+    version
   );
 
   return plain;
