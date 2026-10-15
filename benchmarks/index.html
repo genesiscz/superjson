@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>superjson benchmarks</title>
+    <style>
+      :root { color-scheme: light dark; --ok: #1a7f37; --bad: #cf222e; --muted: #888; }
+      body { font: 13px/1.45 ui-sans-serif, system-ui, sans-serif; margin: 16px 24px; }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      .meta { color: var(--muted); margin-bottom: 12px; }
+      fieldset { border: 1px solid #8884; border-radius: 6px; display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center; padding: 10px 12px; }
+      input[type=text] { width: 320px; }
+      input[type=number] { width: 70px; }
+      button { padding: 4px 10px; }
+      table { border-collapse: collapse; margin-top: 14px; width: 100%; font-variant-numeric: tabular-nums; }
+      th, td { padding: 3px 8px; border-bottom: 1px solid #8883; text-align: left; white-space: nowrap; }
+      th { position: sticky; top: 0; background: Canvas; cursor: pointer; }
+      td.num { text-align: right; }
+      .faster { color: var(--ok); font-weight: 600; }
+      .slower { color: var(--bad); font-weight: 600; }
+      .rme { color: var(--muted); font-size: 11px; }
+      .summary { margin-top: 12px; display: flex; gap: 18px; flex-wrap: wrap; }
+      .summary b { font-size: 15px; }
+      .running td { background: #ffd33d22; }
+      #status { color: var(--muted); }
+    </style>
+  </head>
+  <body>
+    <h1>superjson benchmarks</h1>
+    <div class="meta" id="meta">loading…</div>
+    <fieldset>
+      <label>Filter <input id="filter" type="text" placeholder="e.g. dates, collections, plain JSON 1000" /></label>
+      <span id="ops"></span>
+      <label>ms / case <input id="time" type="number" value="1000" min="100" step="100" /></label>
+      <label>min sample ms <input id="sample" type="number" value="10" min="1" /></label>
+      <button id="run">Run</button>
+      <button id="stop" disabled>Stop</button>
+      <button id="md">Copy markdown</button>
+      <button id="json">Download JSON</button>
+      <span id="status"></span>
+    </fieldset>
+    <fieldset style="margin-top: 8px">
+      <label>Profile case <select id="profileCase"></select></label>
+      <label><select id="profileLib"><option>current</option><option>baseline</option></select></label>
+      <label>seconds <input id="profileSecs" type="number" value="5" min="1" /></label>
+      <button id="profile">Profile (open DevTools first)</button>
+      <span class="rme">Wraps the loop in console.profile(); the profile appears in the DevTools Performance / JavaScript Profiler panel.</span>
+    </fieldset>
+    <div class="summary" id="summary"></div>
+    <table>
+      <thead>
+        <tr>
+          <th data-k="group">Group</th><th data-k="fixture">Fixture</th><th data-k="op">Op</th>
+          <th data-k="baseline" class="num">Baseline ops/s</th><th data-k="current" class="num">Current ops/s</th>
+          <th data-k="speedup" class="num">Speedup</th><th data-k="identical">Same output</th><th data-k="bytes" class="num">JSON size</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

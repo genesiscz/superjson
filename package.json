@@ -16,7 +16,9 @@
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
-    "prepack": "npm run build"
+    "prepack": "npm run build",
+    "bench": "bun benchmarks/cli.ts",
+    "bench:serve": "bun benchmarks/server.ts"
   },
   "prettier": {
     "printWidth": 80,

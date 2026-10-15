@@ -1,0 +1,85 @@
+import { $ } from 'bun';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { parseArgs } from 'node:util';
+import { BENCH, ROOT, bundle, currentEntry, ensureBaseline } from './build.js';
+
+export interface ServerOptions {
+  port: number;
+  baselineRef: string;
+  onResults?: (results: unknown) => void;
+}
+
+// Cross-origin isolation lifts the performance.now() clamp from 100µs to 5µs in Chromium.
+const headers = {
+  'Cache-Control': 'no-store',
+  'Cross-Origin-Opener-Policy': 'same-origin',
+  'Cross-Origin-Embedder-Policy': 'require-corp',
+};
+
+const js = (code: string) =>
+  new Response(code, { headers: { ...headers, 'Content-Type': 'text/javascript' } });
+
+export async function startServer({ port, baselineRef, onResults }: ServerOptions) {
+  const baseline = await ensureBaseline(baselineRef);
+  const resultsDir = join(BENCH, '.results');
+  mkdirSync(resultsDir, { recursive: true });
+
+  return Bun.serve({
+    port,
+    async fetch(req) {
+      const { pathname } = new URL(req.url);
+      try {
+        switch (pathname) {
+          case '/':
+            return new Response(Bun.file(join(BENCH, 'index.html')), { headers });
+          case '/app.js':
+            return js(await bundle(join(BENCH, 'app.ts'), 'browser'));
+          case '/lib/current.js':
+            return js(await bundle(currentEntry, 'browser'));
+          case '/lib/baseline.js':
+            return js(await bundle(baseline.entry, 'browser'));
+          case '/api/info': {
+            const head = (await $`git -C ${ROOT} rev-parse --short=10 HEAD`.text()).trim();
+            const dirty = (await $`git -C ${ROOT} status --porcelain src`.text()).trim() !== '';
+
+            return Response.json(
+              { baseline: { ref: baseline.ref, sha: baseline.sha }, current: { head, dirty } },
+              { headers }
+            );
+          }
+          case '/api/results': {
+            if (req.method !== 'POST') {
+              break;
+            }
+
+            const body = await req.json();
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            await Bun.write(join(resultsDir, `${stamp}-browser.json`), JSON.stringify(body, null, 2));
+            await Bun.write(join(resultsDir, 'latest-browser.json'), JSON.stringify(body, null, 2));
+            onResults?.(body);
+
+            return Response.json({ ok: true }, { headers });
+          }
+        }
+      } catch (error) {
+        console.error(error);
+
+        return new Response(String(error), { status: 500, headers });
+      }
+
+      return new Response('not found', { status: 404, headers });
+    },
+  });
+}
+
+if (import.meta.main) {
+  const { values } = parseArgs({
+    options: {
+      port: { type: 'string', default: process.env.PORT ?? '4173' },
+      baseline: { type: 'string', default: 'origin/main' },
+    },
+  });
+  const server = await startServer({ port: Number(values.port), baselineRef: values.baseline! });
+  console.log(`superjson benchmarks: ${server.url}  (baseline ${values.baseline} vs working tree src/)`);
+}
