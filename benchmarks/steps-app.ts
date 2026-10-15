@@ -25,13 +25,27 @@ interface Ledger {
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const params = new URLSearchParams(location.search);
 const esc = (s: string) => s.replace(/[&<>"]/g, c => `&${{ '&': 'amp', '<': 'lt', '>': 'gt', '"': 'quot' }[c]};`);
-const fmtMs = (ms: number) => (ms >= 100 ? ms.toFixed(0) : ms >= 10 ? ms.toFixed(1) : ms >= 1 ? ms.toFixed(2) : ms.toFixed(3));
+const fmtMs = (ms: number) => (ms === 0 ? '0' : ms >= 100 ? ms.toFixed(0) : ms >= 10 ? ms.toFixed(1) : ms >= 1 ? ms.toFixed(2) : ms.toFixed(3));
 const engineName = (ua: string) => ua.match(/(HeadlessChrome|Chrome|Firefox|Safari)\/[\d.]+/)?.[0] ?? ua;
 const brand = (ua: string) => (/Brave/.test(ua) ? 'Brave ' : '') + engineName(ua);
 
 let ledger: Ledger | null = null;
 let selectedCase = 0;
 let selectedStep: number | null = null;
+
+/** Step number as shown: 1 for the first commit after the baseline; references show their role. */
+const stepLabel = (steps: StepMeta[], i: number) => {
+  const s = steps[i];
+  if (s.kind === 'reference') {
+    return 'ref';
+  }
+
+  if (s.kind === 'baseline') {
+    return 'base';
+  }
+
+  return String(i - steps.filter(x => x.kind === 'reference' || x.kind === 'baseline').length + 1);
+};
 
 /** Index of the step a step is compared against: its git parent among the measured steps. */
 const parentIndex = (steps: StepMeta[], i: number) =>
@@ -108,7 +122,7 @@ function renderChart() {
     out += `<path d="M${x},${top + h} V${top + rx} Q${x},${top} ${x + rx},${top} H${x + barW - rx} Q${x + barW},${top} ${x + barW},${top + rx} V${top + h} Z" fill="${fill}" stroke="${stroke}" ${selectedStep === i ? 'stroke-width="2" style="stroke: var(--text-primary)"' : ''} />`;
     const e = (r.ms * r.rme) / 100;
     out += `<line x1="${x + barW / 2}" x2="${x + barW / 2}" y1="${y(r.ms + e)}" y2="${y(Math.max(0, r.ms - e))}" stroke="var(--text-secondary)" />`;
-    out += `<text x="${x + barW / 2}" y="${height - 12}" text-anchor="middle" font-size="11" fill="var(--text-secondary)">${s.kind === 'reference' ? 'ref' : s.kind === 'baseline' ? 'base' : i}</text>`;
+    out += `<text x="${x + barW / 2}" y="${height - 12}" text-anchor="middle" font-size="11" fill="var(--text-secondary)">${stepLabel(steps, i)}</text>`;
     if (i === base || i === lastKeptIndex(steps)) {
       out += `<text x="${x + barW / 2}" y="${top - 6}" text-anchor="middle" font-size="11" fill="var(--text-primary)">${fmtMs(r.ms)}</text>`;
     }
@@ -123,7 +137,7 @@ function renderChart() {
       const s = steps[i];
       const r = c.results[i];
       const vsBase = base >= 0 ? `${(c.results[base].ms / r.ms).toFixed(2)}× vs baseline` : '';
-      tooltip.innerHTML = `<b>${s.kind === 'step' || s.kind === 'rejected' ? `#${i} ` : ''}${esc(s.subject)}</b><br><code>${s.sha}</code> · ${s.kind}<br>${fmtMs(r.ms)} ms ±${r.rme.toFixed(1)}% · ${vsBase}<br>${delta(c, steps, i) || ''}${r.identical ? '' : '<br><span class="critical">✗ output differs from baseline</span>'}`;
+      tooltip.innerHTML = `<b>${s.kind === 'step' || s.kind === 'rejected' ? `#${stepLabel(steps, i)} ` : ''}${esc(s.subject)}</b><br><code>${s.sha}</code> · ${s.kind}<br>${fmtMs(r.ms)} ms ±${r.rme.toFixed(1)}% · ${vsBase}<br>${delta(c, steps, i) || ''}${r.identical ? '' : '<br><span class="critical">✗ output differs from baseline</span>'}`;
       const box = (svg.parentElement as HTMLElement).getBoundingClientRect();
       tooltip.style.display = 'block';
       tooltip.style.left = `${Math.min(event.clientX - box.left + 12, box.width - 370)}px`;
@@ -169,7 +183,7 @@ function renderLedger() {
     const same = ledger!.cases.every(x => x.results[i].identical);
     const files = s.files.map(f => `${f.path.replace('src/', '')} <span class="good">+${f.added}</span> <span class="critical">−${f.removed}</span>`).join('<br>');
     html += `<tr class="step-row ${s.kind} ${selectedStep === i ? 'selected' : ''}" data-i="${i}">
-      <td>${s.kind === 'step' || s.kind === 'rejected' ? i : ''}</td>
+      <td>${s.kind === 'step' || s.kind === 'rejected' ? stepLabel(steps, i) : ''}</td>
       <td><span class="badge ${s.kind}">${s.kind}</span></td>
       <td><code>${s.sha}</code></td>
       <td class="subject">${esc(s.subject.replace(/^perf: /, '').replace(/ \(rejected\)$/, ''))}</td>
@@ -199,7 +213,7 @@ function renderMatrix() {
   const base = baselineIndex(steps);
   const last = lastKeptIndex(steps);
   let html = `<tr><th>Case</th>${steps
-    .map((s, i) => `<th class="stepcol" title="${esc(s.subject)}">${s.kind === 'reference' ? 'ref' : s.kind === 'baseline' ? 'base' : i}${s.kind === 'rejected' ? '✗' : ''}</th>`)
+    .map((s, i) => `<th class="stepcol" title="${esc(s.subject)}">${stepLabel(steps, i)}${s.kind === 'rejected' ? '✗' : ''}</th>`)
     .join('')}<th class="num">total</th></tr>`;
   ledger.cases.forEach((c, ci) => {
     html += `<tr class="${ci === selectedCase ? 'selected' : ''}"><td><a href="#" data-case="${ci}">${esc(c.fixture)} · ${c.op}</a></td>${c.results
