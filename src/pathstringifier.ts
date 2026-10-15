@@ -2,7 +2,9 @@ export type StringifiedPath = string;
 type Path = string[];
 
 export const escapeKey = (key: string) =>
-  key.replace(/\\/g, '\\\\').replace(/\./g, '\\.');
+  key.indexOf('\\') === -1 && key.indexOf('.') === -1
+    ? key
+    : key.replace(/\\/g, '\\\\').replace(/\./g, '\\.');
 
 export const stringifyPath = (path: Path): StringifiedPath =>
   path
