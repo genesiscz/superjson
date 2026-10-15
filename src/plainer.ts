@@ -10,6 +10,7 @@ import {
 import { escapeKey, stringifyPath } from './pathstringifier.js';
 import {
   isInstanceOfRegisteredClass,
+  transformRegisteredValue,
   transformValue,
   TypeAnnotation,
   untransformValue,
@@ -181,31 +182,49 @@ export function generateReferentialEqualityAnnotations(
 }
 
 class PathNode {
-  constructor(readonly parent: PathNode | null, readonly key: string) {}
+  /** `key` is null only for the root. */
+  constructor(readonly parent: PathNode | null, readonly key: string | null) {}
+}
+
+/** The first visit of a non-primitive, which is also the path node of its children. */
+class Seen extends PathNode {
+  more: PathNode[] | undefined = undefined;
+  done = false;
+  value: any = undefined;
+  annotations: MinimisedTree<TypeAnnotation> = undefined;
 }
 
 const toPath = (node: PathNode | null): string[] => {
   const path: string[] = [];
   for (; node; node = node.parent) {
-    path.push(node.key);
+    if (node.key !== null) {
+      path.push(node.key);
+    }
   }
 
   return path.reverse();
 };
 
-interface Seen {
-  paths: (PathNode | null)[];
-  result: Result | undefined;
-}
+const pathsOf = (seen: Seen): string[][] => {
+  const paths = [toPath(seen)];
+  seen.more?.forEach(node => paths.push(toPath(node)));
+
+  return paths;
+};
 
 interface WalkContext {
   superJson: SuperJSON;
   dedupe: boolean;
-  /** Every non-primitive in visiting order. A missing `result` means the walk of it is still running. */
+  /** Every non-primitive in visiting order. `done` is false while its walk is still running. */
   seen: Map<unknown, Seen>;
   /** Annotations of the value the last `walk` call returned. */
   annotations: MinimisedTree<TypeAnnotation>;
 }
+
+// No built-in rule (Date, Map, typed array...) can match an object with one of these prototypes.
+const isPlainContainer = (object: any): boolean =>
+  isPlainObject(object) ||
+  (isArray(object) && Object.getPrototypeOf(object) === Array.prototype);
 
 function walk(
   object: any,
@@ -217,18 +236,17 @@ function walk(
   let seen: Seen | undefined;
 
   if (!primitive) {
-    const node = key === null ? parent : new PathNode(parent, key);
     seen = ctx.seen.get(object);
     if (seen) {
-      seen.paths.push(node);
-      if (seen.result) {
+      (seen.more ??= []).push(new PathNode(parent, key));
+      if (seen.done) {
         if (ctx.dedupe) {
           ctx.annotations = undefined;
           return null;
         }
 
-        ctx.annotations = seen.result.annotations;
-        return seen.result.transformedValue;
+        ctx.annotations = seen.annotations;
+        return seen.value;
       }
 
       ctx.annotations = undefined;
@@ -237,12 +255,13 @@ function walk(
         : leaf(object, ctx, seen);
     }
 
-    seen = { paths: [node], result: undefined };
+    seen = new Seen(parent, key);
     ctx.seen.set(object, seen);
-    parent = node;
+    parent = seen;
   }
 
-  if (!isDeep(object, ctx.superJson)) {
+  const plainContainer = !primitive && isPlainContainer(object);
+  if (!plainContainer && !isDeep(object, ctx.superJson)) {
     return leaf(object, ctx, seen);
   }
 
@@ -250,7 +269,9 @@ function walk(
     parent = new PathNode(parent, key);
   }
 
-  const transformationResult = transformValue(object, ctx.superJson);
+  const transformationResult = plainContainer
+    ? transformRegisteredValue(object, ctx.superJson)
+    : transformValue(object, ctx.superJson);
   const transformed = transformationResult?.value ?? object;
 
   const transformedValue: any = isArray(transformed) ? [] : {};
@@ -294,27 +315,31 @@ function walk(
     ? [transformationResult.type]
     : undefined;
 
-  if (seen) {
-    seen.result = { transformedValue, annotations };
-  }
-
-  ctx.annotations = annotations;
-  return transformedValue;
+  return finish(ctx, seen, transformedValue, annotations);
 }
 
 function leaf(object: any, ctx: WalkContext, seen: Seen | undefined) {
   const transformed = transformValue(object, ctx.superJson);
-  const transformedValue = transformed ? transformed.value : object;
-  const annotations: MinimisedTree<TypeAnnotation> = transformed
-    ? [transformed.type]
-    : undefined;
 
+  return transformed
+    ? finish(ctx, seen, transformed.value, [transformed.type])
+    : finish(ctx, seen, object, undefined);
+}
+
+function finish(
+  ctx: WalkContext,
+  seen: Seen | undefined,
+  value: any,
+  annotations: MinimisedTree<TypeAnnotation>
+) {
   if (seen) {
-    seen.result = { transformedValue, annotations };
+    seen.done = true;
+    seen.value = value;
+    seen.annotations = annotations;
   }
 
   ctx.annotations = annotations;
-  return transformedValue;
+  return value;
 }
 
 export function walkRoot(
@@ -332,8 +357,8 @@ export function walkRoot(
 
   const identities = new Map<any, any[][]>();
   ctx.seen.forEach((seen, value) => {
-    if (seen.paths.length > 1) {
-      identities.set(value, seen.paths.map(toPath));
+    if (seen.more) {
+      identities.set(value, pathsOf(seen));
     }
   });
 
