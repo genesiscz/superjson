@@ -18,6 +18,7 @@ const { values } = parseArgs({
     time: { type: 'string', default: '6000' },
     headed: { type: 'boolean', default: false },
     repeat: { type: 'string', default: '1' },
+    page: { type: 'string', default: '/steps' },
   },
 });
 
@@ -103,7 +104,7 @@ async function runOnce(run: number): Promise<any> {
     `# ${values.browser}: fixed loop ${unthrottled.toFixed(0)} ms unthrottled, ${throttled.toFixed(0)} ms at rate ${rate} (${(throttled / unthrottled).toFixed(2)}× measured)`
   );
 
-  const url = new URL('/steps', server.url);
+  const url = new URL(values.page!, server.url);
   url.search = new URLSearchParams({
     autorun: '1',
     throttle: String(rate),
@@ -138,8 +139,9 @@ for (const c of cases) {
   console.error(`\n${c.fixture} · ${c.op}`);
   steps.forEach((s: any, i: number) => {
     const r = c.results[i];
+    const shown = r.ms === null ? `${'refused'.padStart(8)}   ` : `${r.ms.toFixed(2).padStart(8)} ms  ${(c.results[base].ms / r.ms).toFixed(2)}×`;
     console.error(
-      `  ${String(i).padStart(2)} ${s.kind.padEnd(9)} ${s.sha} ${r.ms.toFixed(2).padStart(8)} ms  ${(c.results[base].ms / r.ms).toFixed(2)}×${r.identical ? '' : '  ✗ OUTPUT DIFFERS'}  ${s.subject.slice(0, 70)}`
+      `  ${String(i).padStart(2)} ${s.kind.padEnd(9)} ${s.sha} ${shown}${r.identical ? '' : '  ✗ OUTPUT DIFFERS'}  ${s.subject.slice(0, 70)}`
     );
   });
 }

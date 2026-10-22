@@ -26,6 +26,7 @@ export async function startServer({ port, baselineRef, onResults, onLedger }: Se
   const baseline = await ensureBaseline(baselineRef);
   const resultsDir = join(BENCH, '.results');
   const ledgersDir = join(resultsDir, 'ledgers');
+  const compareDir = join(resultsDir, 'compare');
   mkdirSync(ledgersDir, { recursive: true });
   const savedFile = async (dir: string, encoded: string) => {
     const name = basename(decodeURIComponent(encoded));
@@ -61,6 +62,37 @@ export async function startServer({ port, baselineRef, onResults, onLedger }: Se
             return new Response(Bun.file(join(BENCH, 'steps.html')), { headers });
           case '/steps.js':
             return js(await bundle(join(BENCH, 'steps-app.ts'), 'browser'));
+          case '/compare':
+            return new Response(Bun.file(join(BENCH, 'compare.html')), { headers });
+          case '/compare.js':
+            return js(await bundle(join(BENCH, 'compare-app.ts'), 'browser'));
+          case '/lib/devalue.js':
+            return js(await bundle(join(BENCH, 'devalue-lib.ts'), 'browser'));
+          case '/api/compare/libs': {
+            const ours = (await $`git -C ${ROOT} rev-parse perf/faster-serialize`.text()).trim();
+            const raw = (await $`git -C ${ROOT} rev-list -n 1 v2.2.3`.text()).trim();
+            const devalueVersion = JSON.parse(await Bun.file(join(ROOT, 'node_modules/devalue/package.json')).text()).version;
+
+            return Response.json(
+              [
+                { id: 'raw', label: 'superjson 2.2.3 (col-web)', url: `/lib/ref/${raw}.js`, sha: raw, ref: 'v2.2.3', kind: 'baseline', subject: 'superjson 2.2.3, the version col-web ships' },
+                { id: 'base', label: 'superjson origin/main', url: `/lib/ref/${baseline.sha}.js`, sha: baseline.sha, ref: baseline.ref, kind: 'reference', subject: 'superjson origin/main (2.2.5)' },
+                { id: 'ours', label: 'superjson PR #364', url: `/lib/ref/${ours}.js`, sha: ours, ref: 'perf/faster-serialize', kind: 'step', subject: 'superjson perf/faster-serialize (PR #364)' },
+                { id: 'devalue', label: `devalue ${devalueVersion}`, url: '/lib/devalue.js', sha: `devalue@${devalueVersion}`, ref: `npm devalue ${devalueVersion}`, kind: 'lib', subject: `devalue ${devalueVersion} through a SuperJSON-shaped adapter` },
+              ],
+              { headers }
+            );
+          }
+          case '/api/compare': {
+            const body = await req.json();
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const name = `${stamp}-x${body.throttle ?? 1}.json`;
+            mkdirSync(compareDir, { recursive: true });
+            await Bun.write(join(compareDir, name), JSON.stringify(body));
+            onLedger?.(body);
+
+            return Response.json({ ok: true, name }, { headers });
+          }
           case '/api/steps':
             return Response.json(await resolveSteps(), { headers });
           case '/api/ledgers': {
