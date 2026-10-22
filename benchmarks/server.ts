@@ -70,11 +70,13 @@ export async function startServer({ port, baselineRef, onResults, onLedger }: Se
             return js(await bundle(join(BENCH, 'devalue-lib.ts'), 'browser'));
           case '/api/compare/libs': {
             const ours = (await $`git -C ${ROOT} rev-parse perf/faster-serialize`.text()).trim();
+            const raw = (await $`git -C ${ROOT} rev-list -n 1 v2.2.3`.text()).trim();
             const devalueVersion = JSON.parse(await Bun.file(join(ROOT, 'node_modules/devalue/package.json')).text()).version;
 
             return Response.json(
               [
-                { id: 'base', label: 'superjson origin/main', url: `/lib/ref/${baseline.sha}.js`, sha: baseline.sha, ref: baseline.ref, kind: 'baseline', subject: 'superjson origin/main (base)' },
+                { id: 'raw', label: 'superjson 2.2.3 (col-web)', url: `/lib/ref/${raw}.js`, sha: raw, ref: 'v2.2.3', kind: 'baseline', subject: 'superjson 2.2.3, the version col-web ships' },
+                { id: 'base', label: 'superjson origin/main', url: `/lib/ref/${baseline.sha}.js`, sha: baseline.sha, ref: baseline.ref, kind: 'reference', subject: 'superjson origin/main (2.2.5)' },
                 { id: 'ours', label: 'superjson PR #364', url: `/lib/ref/${ours}.js`, sha: ours, ref: 'perf/faster-serialize', kind: 'step', subject: 'superjson perf/faster-serialize (PR #364)' },
                 { id: 'devalue', label: `devalue ${devalueVersion}`, url: '/lib/devalue.js', sha: `devalue@${devalueVersion}`, ref: `npm devalue ${devalueVersion}`, kind: 'lib', subject: `devalue ${devalueVersion} through a SuperJSON-shaped adapter` },
               ],
