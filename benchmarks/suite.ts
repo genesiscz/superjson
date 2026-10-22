@@ -45,12 +45,30 @@ const dataOf = (fixture: Fixture) => {
   return dataCache.get(fixture);
 };
 
+/** devalue exposes `format = 'devalue'` and has no registries, so it skips fixture setup and fidelity is checked instead of bytes. */
+export const isDevalue = (Lib: SuperJSONCtor): boolean => 'format' in Lib && Lib.format === 'devalue';
+
 const instance = (Lib: SuperJSONCtor, fixture: Fixture) => {
   const sj = new Lib({ dedupe: fixture.dedupe });
-  fixture.setup?.(sj);
+  if (!isDevalue(Lib)) {
+    fixture.setup?.(sj);
+  }
 
   return sj;
 };
+
+/** devalue's text differs from superjson's, so it counts as identical when its round trip keeps superjson's canonical form. */
+export function fidelityMatches(reference: SuperJSONCtor, lib: SuperJSONCtor, c: Case): boolean {
+  const ref = instance(reference, c.fixture);
+  const sj = instance(lib, c.fixture);
+  const data = dataOf(c.fixture) as any;
+  const canon = (v: any) => JSON.stringify(ref.serialize(v), stableBigint);
+  try {
+    return canon(sj.parse(sj.stringify(data))) === canon(data);
+  } catch {
+    return false;
+  }
+}
 
 /** Returns the function to time. All inputs are prepared up front so only the op itself is measured. */
 export function prepare(Lib: SuperJSONCtor, c: Case): () => unknown {
@@ -215,7 +233,9 @@ export async function runSteps(
 ): Promise<{ bytes: number; results: StepResult[] }> {
   const reference = versions[referenceIndex];
   const expected = outputSignature(reference, reference, c);
-  const identical = versions.map(v => outputSignature(reference, v, c) === expected);
+  const identical = versions.map(v =>
+    isDevalue(v) ? fidelityMatches(reference, v, c) : outputSignature(reference, v, c) === expected
+  );
   const fns = versions.map(v => prepare(v, c));
   fns.forEach(fn => timeIt(fn, 2));
   const counts = fns.map(fn => calibrate(fn, opts.minSampleMs));
